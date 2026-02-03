@@ -1,0 +1,67 @@
+pattern: CLIP-Refine
+main: main/train_cc3m.py
+epoch: 1
+batchsize: 128
+experiment_iterations: 1
+snapshot_interval: 1
+distributed: null
+rank: null
+local_rank: null
+world_size: null
+log_metrics: ["modality_gap", "loss_kd", "loss_feat"]
+
+models:
+  pattern: CLIP-ViT-L_14
+  model:
+    func: model/mod_clip.py
+    name: CLIP
+    args:
+      backbone_name: "ViT-L/14"
+
+dataset:
+  dataset_func: data/data.py
+  dataset_name: get_wds_dataset
+  args:
+    train_data: /lpai/dataset/cc3m-webdataset/0-1-0/cc3m/cc3m-train-{0000..0575}.tar
+    train_num_samples: 2905954
+    train_data_upsampling_factors: null
+    val_data: null
+    val_num_samples: null
+    seed: null
+    workers: null
+    world_size: null
+    batch_size: null
+    epoch: null
+    tokenizer: null
+    transform: null
+    test: False
+
+dataset_cls:
+  dataset_func: data/generic.py
+  dataset_name: ImageNet
+  use_ratio: 0.0
+  classname_file: "data/classnames/imagenet.txt"
+  args:
+    transform: null
+    test: False
+
+dataset_mmvp:
+  benchmark_dir: /lpai/dataset/MMVP__MMVP_VLM/main
+
+optimizer:
+  algorithm: AdamW
+  args:
+    lr: 1.0e-6
+    weight_decay: 0.1
+    
+updater:
+  func: updater/contrastive.py
+  name: RandRegUpdater
+  args:
+    strategy: std_sample
+    lambda_cont: 0.0
+    lambda_rand: 1.0
+    lambda_kd: 1.0
+    distill_loss: kd
+    alpha_blending: 0.5
+    use_amp: true
