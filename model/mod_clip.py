@@ -48,7 +48,6 @@ class CLIP(torch.nn.Module):
         backbone_name="ViT-B/32",
         feat_dim=2048,
         init_logit_scale=np.log(1 / 0.01),
-        fine_tune_last_n_layers=1,
     ):
         super().__init__()
         # Load Backbone Vision-Language Model
@@ -60,8 +59,6 @@ class CLIP(torch.nn.Module):
         self.feat_dim = feat_dim
         self.convert_models_to_fp32()
         self.logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
-
-        self._freeze_backbone_but_last_n_layers(fine_tune_last_n_layers)
 
         # self.concat_logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
