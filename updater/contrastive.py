@@ -177,12 +177,14 @@ class ConcatUpdater(CLIPUpdater):
         *args,
         # lambda_concat=1.0,
         lambda_struct=1.0,
+        lambda_mid=1.0,
         regularization_decay=False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         # self.lambda_concat = lambda_concat
         self.lambda_struct = lambda_struct
+        self.lambda_mid = lambda_mid
         self.regularization_decay = regularization_decay
         self.decay_rate = 1.0
     
@@ -238,12 +240,36 @@ class ConcatUpdater(CLIPUpdater):
     #     return loss_kd
 
     ## method4:全局结构相似 ---59.04
-    def struct_loss(self, images, texts, feat_i, feat_t, temperature=0.07):
+    # def struct_loss(self, images, texts, feat_i, feat_t, temperature=0.07):
+    #     with torch.no_grad():
+    #         out_t = self.teacher(images, texts.squeeze())
+    #         feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
+    #         logits_imgt = feat_it @ feat_it.T
+    #         logits_txtt = feat_tt @ feat_tt.T
+
+    #     # feat_i = F.normalize(feat_i, dim=-1)
+    #     # feat_t = F.normalize(feat_t, dim=-1)
+
+    #     logits_img = feat_i @ feat_i.T
+    #     logits_txt = feat_t @ feat_t.T
+
+    #     kl_img_txt = distill(logits_img, logits_imgt, temperature)
+    #     kl_txt_img = distill(logits_txt, logits_txtt, temperature)
+
+    #     loss_kd = (kl_img_txt + kl_txt_img) / 2
+
+    #     return loss_kd
+
+    ## method5:全局结构相似+中间层特征 ---
+    def struct_loss(self, images, texts, feat_i, feat_t, feat_mid_v=None, temperature=0.07):
         with torch.no_grad():
             out_t = self.teacher(images, texts.squeeze())
             feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
             logits_imgt = feat_it @ feat_it.T
             logits_txtt = feat_tt @ feat_tt.T
+
+            feat_mid_vt = out_t["feat_mid_v"]
+            feat_mid_vt = F.normalize(feat_mid_vt, dim=-1) if feat_mid_vt is not None else None
 
         # feat_i = F.normalize(feat_i, dim=-1)
         # feat_t = F.normalize(feat_t, dim=-1)
@@ -256,7 +282,9 @@ class ConcatUpdater(CLIPUpdater):
 
         loss_kd = (kl_img_txt + kl_txt_img) / 2
 
-        return loss_kd
+        loss_mid = F.mse_loss(feat_mid_v, feat_mid_vt) if feat_mid_vt is not None else 0.0
+
+        return loss_kd, loss_mid
 
     def __call__(self, engine, batch):
         report = {}
@@ -278,8 +306,12 @@ class ConcatUpdater(CLIPUpdater):
             # total_loss = loss_main + self.lambda_concat * loss_concat
 
             ## method3
-            loss_struct = self.struct_loss(images, texts, feat_i, feat_t)
-            total_loss = loss_main + self.decay_rate * self.lambda_struct * loss_struct
+            # loss_struct = self.struct_loss(images, texts, feat_i, feat_t)
+            # total_loss = loss_main + self.decay_rate * self.lambda_struct * loss_struct
+
+            ## method5
+            loss_struct, loss_mid = self.struct_loss(images, texts, feat_i, feat_t, out["feat_mid_v"])
+            total_loss = loss_main + self.lambda_struct * loss_struct + self.lambda_mid * loss_mid
 
             if self.teacher:
                 self.teacher.eval()  # Ensure teacher is in eval mode
@@ -305,8 +337,9 @@ class ConcatUpdater(CLIPUpdater):
         report.update(
             {
                 "loss": contrastive_loss.detach().item(),
-                "loss_concat": loss_concat.detach().item(),
+                # "loss_concat": loss_concat.detach().item(),
                 "loss_struct": loss_struct.detach().item(),
+                "loss_mid": loss_mid.detach().item(),
                 "feat_gap": feat_gap.detach().item(),
                 "modality_gap": modality_gap.detach().item(),
             }

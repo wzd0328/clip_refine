@@ -5,7 +5,7 @@ batchsize: 512
 experiment_iterations: 1
 train_val_split_ratio: 0.99
 snapshot_interval: 1
-log_metrics: ["modality_gap", "loss_kd", "loss_concat", "loss_struct"]
+log_metrics: ["modality_gap", "loss_kd", "loss_struct", "loss_mid"]
 
 models:
   pattern: CLIP-ViT-B_32
@@ -46,6 +46,8 @@ updater:
     lambda_cont: 0.0
     # lambda_concat: 0.0
     lambda_struct: 1.0
+    lambda_mid: 1.0
     lambda_kd: 0.0
     # distill_loss: kd
     # alpha_blending: 0.5
+    use_amp: false

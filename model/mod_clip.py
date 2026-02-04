@@ -48,6 +48,7 @@ class CLIP(torch.nn.Module):
         backbone_name="ViT-B/32",
         feat_dim=2048,
         init_logit_scale=np.log(1 / 0.01),
+        post_train_last_n_layers=2,
     ):
         super().__init__()
         # Load Backbone Vision-Language Model
@@ -60,6 +61,11 @@ class CLIP(torch.nn.Module):
         self.convert_models_to_fp32()
         self.logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
+        self._freeze_backbone_but_last_n_layers(post_train_last_n_layers)
+
+        self.visual_intermediate_features = {} 
+        self._register_visual_hooks(layer_index=-2)
+
         # self.concat_logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
         ## add fusion module ##
@@ -70,6 +76,53 @@ class CLIP(torch.nn.Module):
         #         nn.Linear(512, 512),
         #         # nn.Sigmoid()
         #     )
+
+    def _freeze_backbone_but_last_n_layers(self, n):
+        for p in self.parameters():
+            p.requires_grad = False
+            
+        # for p in self.fusion_head.parameters():
+        #     p.requires_grad = True
+        self.logit_scale.requires_grad = True
+        
+        if hasattr(self.backbone, "visual"):
+            visual_encoder = self.backbone.visual
+            
+            if hasattr(visual_encoder, "ln_post"):
+                for p in visual_encoder.ln_post.parameters():
+                    p.requires_grad = True
+            if hasattr(visual_encoder, "ln_final"):
+                 for p in visual_encoder.ln_final.parameters():
+                    p.requires_grad = True
+
+            if hasattr(visual_encoder, "transformer"):
+                resblocks = visual_encoder.transformer.resblocks
+            elif hasattr(visual_encoder, "trunk"): 
+                resblocks = visual_encoder.trunk.blocks
+
+            if n > 0 and len(resblocks) > 0:
+                print(f"==> Unfreezing last {n} layers of Vision Encoder")
+                layers_to_train = resblocks[-n:]
+                for layer in layers_to_train:
+                    for p in layer.parameters():
+                        p.requires_grad = True
+            else:
+                print("==> Vision Encoder is fully frozen.")
+
+    def _register_visual_hooks(self, layer_index=-2):
+        def hook_fn(module, input, output):
+            if output.shape[0] != input[0].shape[1]:
+                 output = output.permute(1, 0, 2)
+            self.visual_intermediate_features["feat"] = output
+
+        if hasattr(self.backbone.visual, "transformer"):
+            target_layers = self.backbone.visual.transformer.resblocks
+        elif hasattr(self.backbone.visual, "trunk"):
+            target_layers = self.backbone.visual.trunk.blocks
+        else:
+            return
+
+        target_layers[layer_index].register_forward_hook(hook_fn)
 
     def convert_models_to_fp32(self):
         for p in self.parameters():
@@ -108,16 +161,20 @@ class CLIP(torch.nn.Module):
         # feat_v_masked = feat_v * active_mask
         # feat_v_masked = F.normalize(feat_v_masked, dim=-1)
 
-        ## method3
+        ## method3,4
         # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
 
         ## method2
         # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp()}
 
         ## method1
-        feat_st_concat = self.encode_concat(feat_v, feat_t)
-        return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "feat_st_concat": feat_st_concat}
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp(), "feat_st_concat": feat_st_concat, "feat_ts_concat": feat_ts_concat}
+        # feat_st_concat = self.encode_concat(feat_v, feat_t)
+        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "feat_st_concat": feat_st_concat}
+
+        ## method5 intermediate features
+        feat_mid_v = self.visual_intermediate_features.get("feat", None)
+        feat_mid_v = F.normalize(feat_mid_v, dim=-1) if feat_mid_v is not None else None
+        return {"image_features": feat_v, "text_features": feat_t, "feat_mid_v": feat_mid_v, "logit_scale": self.logit_scale.exp()}
 
 
 class ZeroshotClassifier(CLIP):
