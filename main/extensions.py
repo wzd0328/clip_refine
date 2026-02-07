@@ -115,6 +115,10 @@ def log_pretraining_validation_results(engine, cont_evaluator, val_loader, cls_e
 def log_pretraining_results(engine, cls_evaluator, test_loader, log, pbar, dist):
     log_dict = log["running"][-1]
 
+    # Clear GPU cache before validation
+    import torch
+    torch.cuda.empty_cache()
+
     # Do validation on classification
     cls_evaluator.run(test_loader)
     metrics_cls = cls_evaluator.state.metrics

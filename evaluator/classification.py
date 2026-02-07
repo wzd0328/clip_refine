@@ -67,13 +67,14 @@ class ClassifierEvaluator:
 
     def __call__(self, engine, batch):
         self.model.eval()
-        x, y = self.get_batch(batch, device=self.device)
-        image_features = self.model.module.encode_image(x, normalized=True)
-        if isinstance(image_features, tuple):
-            image_features = image_features[0]
-        y_pred = (100.0 * image_features @ self.get_text_features(x.device).T).softmax(dim=-1)
-        loss = F.cross_entropy(y_pred, y).detach().item()
-        acc = accuracy(y_pred, y)[0].detach().item()
+        with torch.no_grad():
+            x, y = self.get_batch(batch, device=self.device)
+            image_features = self.model.module.encode_image(x, normalized=True)
+            if isinstance(image_features, tuple):
+                image_features = image_features[0]
+            y_pred = (100.0 * image_features @ self.get_text_features(x.device).T).softmax(dim=-1)
+            loss = F.cross_entropy(y_pred, y).detach().item()
+            acc = accuracy(y_pred, y)[0].detach().item()
         return {"loss": loss, "accuracy": acc}
 
 

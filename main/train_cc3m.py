@@ -200,9 +200,9 @@ def main(config):
     best_check_pointer = ModelCheckpoint(
         str(out),
         filename_prefix="best",
-        score_function=extensions.check_loss,
+        score_function=extensions.check_cls_loss,
         n_saved=1,
-        score_name="val_loss",
+        score_name="cls_loss",
         require_empty=not config["resume"],
     )
 
@@ -281,3 +281,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
