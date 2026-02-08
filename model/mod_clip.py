@@ -10,6 +10,8 @@ import open_clip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Callable, OrderedDict, Optional
+from dataclasses import dataclass
 
 OPENCLIP_DATASET = {"ViT-H-14": "laion2b_s32b_b79k", "ViT-bigG-14": "laion2b_s39b_b160k"}
 
@@ -41,6 +43,103 @@ def load_model(model_name: str):
         tokenizer = partial(clip.tokenize, truncate=True)
     return model, preprocess, tokenizer
 
+class LayerNormFp32(nn.LayerNorm):
+    """Subclass torch's LayerNorm to handle fp16 (by casting to float32 and back)."""
+
+    def forward(self, x: torch.Tensor):
+        orig_type = x.dtype
+        x = F.layer_norm(x.to(torch.float32), self.normalized_shape, self.weight, self.bias, self.eps)
+        return x.to(orig_type)
+
+class LayerNorm(nn.LayerNorm):
+    """Subclass torch's LayerNorm (with cast back to input dtype)."""
+
+    def forward(self, x: torch.Tensor):
+        orig_type = x.dtype
+        x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        return x.to(orig_type)
+    
+class QuickGELU(nn.Module):
+    # NOTE This is slower than nn.GELU or nn.SiLU and uses more GPU memory
+    def forward(self, x: torch.Tensor):
+        return x * torch.sigmoid(1.702 * x)
+
+class MixClsHead(nn.Module):
+    def __init__(
+            self,
+            width: int,
+            layers: int,
+            mlp_ratio: float = 4.0,
+            act_layer: Callable = nn.GELU,
+            norm_layer: Callable = LayerNorm,
+            output_dim: int = 512,
+    ):
+        super().__init__()
+        self.width = width
+        
+        mlp_width = int(width * mlp_ratio)
+        self.mlps = nn.ModuleList([nn.Sequential(OrderedDict([
+            ("c_norm", norm_layer(width)),
+            ("c_fc", nn.Linear(width, mlp_width)),
+            ("gelu", act_layer()),
+            ("c_proj", nn.Linear(mlp_width, width))
+        ])) for _ in range(layers)])
+        
+        self.ln_mlp = norm_layer(width)
+        self.text_projection = nn.Linear(width, output_dim)
+
+        self.init_parameters()
+
+    def init_parameters(self):
+        proj_std = (self.width ** -0.5) * (2 ** -0.5)
+        fc_std = (2 * self.width) ** -0.5
+
+        for block in self.mlps:
+            nn.init.normal_(block.c_fc.weight, std=fc_std)
+            nn.init.normal_(block.c_proj.weight, std=proj_std)
+
+        if self.text_projection is not None:
+            nn.init.normal_(self.text_projection.weight, std=self.width ** -0.5)
+            self.text_projection.bias.data.fill_(0.0)
+
+    def forward(self, x):
+
+        for mlp in self.mlps:
+            x = x + mlp(x)
+
+        x = self.ln_mlp(x)
+        x = self.text_projection(x)
+
+        return x
+
+@dataclass
+class ClassHeadCfg:
+    mlp_ratio: int = 4
+    layers: int = 1
+    vocab_size: int = 49408
+
+def _build_cls_head(
+        width,
+        clshead_cfg,
+        quick_gelu: bool = False,
+        cast_dtype: Optional[torch.dtype] = None,
+):
+    clshead_cfg = ClassHeadCfg(**clshead_cfg) if isinstance(clshead_cfg, dict) else clshead_cfg
+    act_layer = QuickGELU if quick_gelu else nn.GELU
+    norm_layer = (
+        LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
+    )
+
+    head = MixClsHead(
+        width=width,
+        layers=clshead_cfg.layers,
+        mlp_ratio=clshead_cfg.mlp_ratio,
+        act_layer=act_layer,
+        norm_layer=norm_layer,
+        output_dim=clshead_cfg.vocab_size,
+    )
+
+    return head
 
 class CLIP(torch.nn.Module):
     def __init__(
@@ -48,6 +147,9 @@ class CLIP(torch.nn.Module):
         backbone_name="ViT-B/32",
         feat_dim=2048,
         init_logit_scale=np.log(1 / 0.01),
+        clshead_cfg=ClassHeadCfg,
+        quick_gelu: bool = False,
+        cast_dtype: Optional[torch.dtype] = None,
     ):
         super().__init__()
         # Load Backbone Vision-Language Model
@@ -60,16 +162,20 @@ class CLIP(torch.nn.Module):
         self.convert_models_to_fp32()
         self.logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
-        # self.concat_logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
+        ## add superclass
+        clshead_cfg = ClassHeadCfg(**clshead_cfg) if isinstance(clshead_cfg, dict) else clshead_cfg
+        self.text_decoder = _build_cls_head(
+            embed_dim=self.backbone.visual.output_dim,
+            clshead_cfg=clshead_cfg,
+            quick_gelu=quick_gelu,
+            cast_dtype=cast_dtype,
+        )
+        self.register_buffer("cap_fq", torch.zeros([1, clshead_cfg.vocab_size], dtype=torch.float64))
+        self.register_buffer("num_samples", torch.zeros([1, 1], dtype=torch.float64))
 
-        ## add fusion module ##
-        ## method1
-        # self.fusion_head = nn.Sequential(
-        #         nn.Linear(512*2, 512),
-        #         nn.ReLU(),
-        #         nn.Linear(512, 512),
-        #         # nn.Sigmoid()
-        #     )
+    @torch.jit.ignore
+    def set_grad_checkpointing(self, enable=True):
+        self.visual.set_grad_checkpointing(enable)
 
     def convert_models_to_fp32(self):
         for p in self.parameters():
@@ -87,38 +193,26 @@ class CLIP(torch.nn.Module):
             feat_t = feat_t / feat_t.norm(dim=-1, keepdim=True)
         return feat_t
 
-    def encode_concat(self, feat_i: torch.Tensor, feat_t:torch.Tensor, normalized: bool = True):
-        feat_st_concat = torch.cat([feat_i, feat_t], dim=1)
-        # feat_st_concat = feat_i + feat_t
-        feat_st_concat = self.fusion_head(feat_st_concat)
-        feat_st_concat = F.normalize(feat_st_concat, dim=-1)
-
-        # feat_ts_concat = torch.cat([feat_t, feat_i], dim=1)
-        # feat_ts_concat = self.fusion_head(feat_ts_concat)
-        # feat_ts_concat = F.normalize(feat_ts_concat, dim=-1)
-
-        # return feat_st_concat, feat_ts_concat
-        return feat_st_concat
-
-    def forward(self, images: torch.Tensor, texts: torch.Tensor, test=False):
+    def forward(self, images: torch.Tensor, texts: torch.Tensor, image_embs=None, test=False):
         feat_v = self.backbone.encode_image(images)
         feat_t = self.backbone.encode_text(texts)
 
-        # active_mask = self.channel_mask(feat_v)
-        # feat_v_masked = feat_v * active_mask
-        # feat_v_masked = F.normalize(feat_v_masked, dim=-1)
+        if image_embs is None:
+            image_embs = self.visual(images)
 
-        ## method3
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
+        logits = self.text_decoder(image_embs)
+        labels = texts.clone()
 
-        ## method2
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp()}
-
-        ## method1
-        feat_st_concat = self.encode_concat(feat_v, feat_t)
-        return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "feat_st_concat": feat_st_concat}
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp(), "feat_st_concat": feat_st_concat, "feat_ts_concat": feat_ts_concat}
-
+        return {
+            "image_features": feat_v,
+            "text_features": feat_t,
+            "logit_scale": self.logit_scale.exp(),
+            "cap_fq": self.cap_fq,
+            "num_samples": self.num_samples,
+            "logits": logits,
+            "labels": labels,
+            "cls_logit_scale": torch.ones([1]),
+        }
 
 class ZeroshotClassifier(CLIP):
     def __init__(

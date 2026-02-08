@@ -9,6 +9,9 @@ import torch.distributions as dists
 import torch.nn.functional as F
 from ignite.utils import convert_tensor
 
+import torch.distributed.nn
+from torch import distributed as dist
+
 #from loss.mmd import MMDLoss
 
 
@@ -40,11 +43,14 @@ class CLIPUpdater:
         temperature=1.0,
         alpha_blending=0.0,
         use_amp=False,  # 添加AMP支持
+        pad_id: int = 0,
         **kwargs,
     ):
         self.model = kwargs.pop("model")
         self.optimizer = kwargs.pop("optimizer")
         self.device = kwargs.pop("device")
+        self.world_size = kwargs.pop("world_size", 1)
+        self.pad_id = pad_id
         self.lambda_cont = lambda_cont
         self.max_iteration = max_iteration
         if lambda_kd is not None:
@@ -171,18 +177,16 @@ class CLIPUpdater:
         )
         return report
 
-class ConcatUpdater(CLIPUpdater):
+class MultilabelUpdater(CLIPUpdater):
     def __init__(
         self,
         *args,
-        # lambda_concat=1.0,
-        lambda_struct=1.0,
+        lambda_multi=1.0,
         regularization_decay=False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        # self.lambda_concat = lambda_concat
-        self.lambda_struct = lambda_struct
+        self.lambda_multi = lambda_multi
         self.regularization_decay = regularization_decay
         self.decay_rate = 1.0
     
@@ -191,72 +195,28 @@ class ConcatUpdater(CLIPUpdater):
             assert current_iteration <= self.max_iteration
             self.decay_rate = 1.0 - (current_iteration / self.max_iteration)
 
-    ## method2:按单模态维度concat，batch内对比损失，scale单独初始化---27.72
-    # def concat_loss(self, images, texts, feat_i, logit_scale):
-    #     with torch.no_grad():
-    #         out_t = self.teacher(images, texts.squeeze())
-    #         feat_it = out_t["image_features"]
-    #     feat_i_concat = torch.cat([feat_i, feat_it], dim=1)
-    #     feat_i_concat = F.normalize(feat_i_concat, dim=-1)
-    #     logits_concat = feat_i_concat @ feat_i_concat.T
-    #     labels = torch.arange(logits_concat.shape[0], device=self.device, dtype=torch.long)
-    #     logits_concat = logits_concat - F.one_hot(labels, logits_concat.shape[1]) * logits_concat
-    #     loss_kd = F.cross_entropy(logit_scale * logits_concat, labels)
-    #     return loss_kd
+    def multilabel_loss(self, cap_fq, num_samples, logits, labels, cls_logit_scale):
+        def reweight_targets(cap_fq, num_samples, targets):
+            cap_fq += targets.sum(dim=0, keepdim=True) / targets.shape[0]
+            num_samples += 1
+            dist.all_reduce(cap_fq, op=dist.ReduceOp.AVG)
+            dist.all_reduce(num_samples, op=dist.ReduceOp.AVG)
+            all_batch_size = self.world_size * targets.shape[0]
+            targets = targets * torch.log((num_samples+1.0/all_batch_size) / (cap_fq+1.0/all_batch_size)).to(dtype=targets.dtype)
+            return targets
+        
+        B, C = logits.shape
 
-    def concat_loss(self, images, texts, feat_i, feat_t, feat_s_concat):
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
-            out_t = self.teacher(images, texts.squeeze())
-            feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
+        targets = torch.zeros(B, C, dtype=torch.float32).to(labels.device)
+        # scatter labels to one-hot
+        targets.scatter_(dim=1, index=labels, value=1.0)
 
-        # feat_concat = torch.cat([feat_i, feat_t], dim=1) * feat_s_concat
-        # feat_t_concat = torch.cat([feat_it, feat_tt], dim=1)
-        # feat_concat = torch.cat([feat_i, feat_t], dim=1)
-        # feat_concat = F.normalize(feat_concat, dim=-1)
-        # feat_t_concat = F.normalize(feat_t_concat, dim=-1)
+        targets = reweight_targets(cap_fq, num_samples, targets)
+        
+        norm_item = F.normalize(targets, p=1, dim=1)
+        loss_multi =  -(F.log_softmax(logits, dim=1) * norm_item).sum(dim=1).mean()
 
-        # loss_concat = F.mse_loss(feat_s_concat, feat_it) + F.mse_loss(feat_s_concat, feat_tt)
-
-        ## method1---60.632 , (去掉decay_rate)---60.61
-        loss_kd = F.mse_loss(feat_i, feat_s_concat) + F.mse_loss(feat_t, feat_s_concat)
-
-        return loss_kd
-
-    ## method3:局部结构相似 ---60.242
-    # def struct_loss(self, feat_i, feat_t, temperature=0.07):
-    #     feat_i = F.normalize(feat_i, dim=-1)
-    #     feat_t = F.normalize(feat_t, dim=-1)
-
-    #     logits_img = feat_i @ feat_i.T
-    #     logits_txt = feat_t @ feat_t.T
-
-    #     kl_img_txt = distill(logits_img, logits_txt, temperature)
-    #     kl_txt_img = distill(logits_txt, logits_img, temperature)
-
-    #     loss_kd = (kl_img_txt + kl_txt_img) / 2
-
-    #     return loss_kd
-
-    ## method4:全局结构相似 ---59.04
-    def struct_loss(self, images, texts, feat_i, feat_t, temperature=0.07):
-        with torch.no_grad():
-            out_t = self.teacher(images, texts.squeeze())
-            feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
-            logits_imgt = feat_it @ feat_it.T
-            logits_txtt = feat_tt @ feat_tt.T
-
-        # feat_i = F.normalize(feat_i, dim=-1)
-        # feat_t = F.normalize(feat_t, dim=-1)
-
-        logits_img = feat_i @ feat_i.T
-        logits_txt = feat_t @ feat_t.T
-
-        kl_img_txt = distill(logits_img, logits_imgt, temperature)
-        kl_txt_img = distill(logits_txt, logits_txtt, temperature)
-
-        loss_kd = (kl_img_txt + kl_txt_img) / 2
-
-        return loss_kd
+        return loss_multi
 
     def __call__(self, engine, batch):
         report = {}
@@ -271,15 +231,16 @@ class ConcatUpdater(CLIPUpdater):
             contrastive_loss = self.clip_loss(feat_i, feat_t, out["logit_scale"])
             loss_main = self.lambda_cont * contrastive_loss
 
-            ## method1
-            # loss_concat = self.concat_loss(images, texts, feat_i, feat_t, out["feat_st_concat"])
-            # loss_concat = self.concat_loss(images, texts, feat_i, out["concat_logit_scale"])
-            # total_loss = loss_main + self.decay_rate * self.lambda_concat * loss_concat
-            # total_loss = loss_main + self.lambda_concat * loss_concat
-
-            ## method3
-            loss_struct = self.struct_loss(images, texts, feat_i, feat_t)
-            total_loss = loss_main + self.decay_rate * self.lambda_struct * loss_struct
+            ## multilabel loss
+            cap_fq, num_samples, logits, labels, cls_logit_scale = (
+                out["cap_fq"],
+                out["num_samples"],
+                out["logits"],
+                out["labels"],
+                out["cls_logit_scale"],
+            )
+            loss_multi = self.multilabel_loss(cap_fq, num_samples, logits, labels, cls_logit_scale)
+            total_loss = loss_main + self.decay_rate * self.lambda_multi * loss_multi
 
             if self.teacher:
                 self.teacher.eval()  # Ensure teacher is in eval mode
@@ -305,8 +266,7 @@ class ConcatUpdater(CLIPUpdater):
         report.update(
             {
                 "loss": contrastive_loss.detach().item(),
-                "loss_concat": loss_concat.detach().item(),
-                "loss_struct": loss_struct.detach().item(),
+                "loss_multi": loss_multi.detach().item(),
                 "feat_gap": feat_gap.detach().item(),
                 "modality_gap": modality_gap.detach().item(),
             }
