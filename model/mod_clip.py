@@ -61,10 +61,10 @@ class CLIP(torch.nn.Module):
         self.convert_models_to_fp32()
         self.logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
-        self._freeze_backbone_but_last_n_layers(post_train_last_n_layers)
+        # self._freeze_backbone_but_last_n_layers(post_train_last_n_layers)
 
-        self.visual_intermediate_features = {} 
-        self._register_visual_hooks(layer_index=-2)
+        # self.visual_intermediate_features = {}
+        # self._register_visual_hooks(layer_index=-2)
 
         # self.concat_logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
@@ -161,8 +161,8 @@ class CLIP(torch.nn.Module):
         # feat_v_masked = feat_v * active_mask
         # feat_v_masked = F.normalize(feat_v_masked, dim=-1)
 
-        ## method3,4
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
+        ## method3,4,6
+        return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
 
         ## method2
         # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp()}
@@ -172,9 +172,9 @@ class CLIP(torch.nn.Module):
         # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "feat_st_concat": feat_st_concat}
 
         ## method5 intermediate features
-        feat_mid_v = self.visual_intermediate_features.get("feat", None)
-        feat_mid_v = F.normalize(feat_mid_v, dim=-1) if feat_mid_v is not None else None
-        return {"image_features": feat_v, "text_features": feat_t, "feat_mid_v": feat_mid_v, "logit_scale": self.logit_scale.exp()}
+        # feat_mid_v = self.visual_intermediate_features.get("feat", None)
+        # feat_mid_v = F.normalize(feat_mid_v, dim=-1) if feat_mid_v is not None else None
+        # return {"image_features": feat_v, "text_features": feat_t, "feat_mid_v": feat_mid_v, "logit_scale": self.logit_scale.exp()}
 
 
 class ZeroshotClassifier(CLIP):

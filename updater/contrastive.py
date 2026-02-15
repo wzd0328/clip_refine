@@ -176,15 +176,17 @@ class ConcatUpdater(CLIPUpdater):
         self,
         *args,
         # lambda_concat=1.0,
-        lambda_struct=1.0,
-        lambda_mid=1.0,
+        # lambda_struct=1.0,
+        # lambda_mid=1.0,
+        lambda_negkd=1.0,
         regularization_decay=False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         # self.lambda_concat = lambda_concat
-        self.lambda_struct = lambda_struct
-        self.lambda_mid = lambda_mid
+        # self.lambda_struct = lambda_struct
+        # self.lambda_mid = lambda_mid
+        self.lambda_negkd = lambda_negkd
         self.regularization_decay = regularization_decay
         self.decay_rate = 1.0
     
@@ -285,6 +287,35 @@ class ConcatUpdater(CLIPUpdater):
         loss_mid = F.mse_loss(feat_mid_v, feat_mid_vt) if feat_mid_vt is not None else 0.0
 
         return loss_kd, loss_mid
+    
+    ## method6: cliploss + 负样本kd
+    def neg_kd_loss(self, images, texts, feat_i, feat_t):
+        def get_negative_mask(batch_size):
+            mask = torch.ones((batch_size, batch_size), dtype=torch.bool)
+            mask.fill_diagonal_(0)
+            return mask
+        def distillation_on_negatives(student_logits, teacher_logits):
+            batch_size = student_logits.shape[0]
+            mask = get_negative_mask(batch_size).to(student_logits.device)
+            # reshape 为 (B, B-1)，把对角线元素剔除
+            s_neg = student_logits[mask].view(batch_size, -1)
+            t_neg = teacher_logits[mask].view(batch_size, -1)
+
+            loss = distill(s_neg, t_neg.detach(), self.T)
+
+            return loss
+        with torch.no_grad():
+            out_t = self.teacher(images, texts.squeeze())
+            feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
+            logits_per_image_t = feat_it @ feat_tt.T
+            logits_per_text_t = feat_tt @ feat_it.T
+        
+        logits_per_image = feat_i @ feat_t.T
+        logits_per_text = feat_t @ feat_i.T
+
+        loss_kd = (distillation_on_negatives(logits_per_image, logits_per_image_t) +
+                    distillation_on_negatives(logits_per_text, logits_per_text_t)) / 2
+        return loss_kd
 
     def __call__(self, engine, batch):
         report = {}
@@ -310,8 +341,12 @@ class ConcatUpdater(CLIPUpdater):
             # total_loss = loss_main + self.decay_rate * self.lambda_struct * loss_struct
 
             ## method5
-            loss_struct, loss_mid = self.struct_loss(images, texts, feat_i, feat_t, out["feat_mid_v"])
-            total_loss = loss_main + self.lambda_struct * loss_struct + self.lambda_mid * loss_mid
+            # loss_struct, loss_mid = self.struct_loss(images, texts, feat_i, feat_t, out["feat_mid_v"])
+            # total_loss = loss_main + self.lambda_struct * loss_struct + self.lambda_mid * loss_mid
+
+            ## method6
+            loss_negkd = self.neg_kd_loss(images, texts, feat_i, feat_t)
+            total_loss = loss_main + self.lambda_negkd * loss_negkd
 
             if self.teacher:
                 self.teacher.eval()  # Ensure teacher is in eval mode
@@ -338,8 +373,9 @@ class ConcatUpdater(CLIPUpdater):
             {
                 "loss": contrastive_loss.detach().item(),
                 # "loss_concat": loss_concat.detach().item(),
-                "loss_struct": loss_struct.detach().item(),
-                "loss_mid": loss_mid.detach().item(),
+                # "loss_struct": loss_struct.detach().item(),
+                # "loss_mid": loss_mid.detach().item(),
+                "loss_negkd": loss_negkd.detach().item(),
                 "feat_gap": feat_gap.detach().item(),
                 "modality_gap": modality_gap.detach().item(),
             }
