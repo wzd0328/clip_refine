@@ -214,7 +214,7 @@ def main(config):
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_path", type=str, default="configs/base.yml", help="path to config file")
-    parser.add_argument("--results_dir", type=str, default="/lpai/output/models/clip-refine/cc3m-openaiclip-vitL14", help="directory to save the results to")
+    parser.add_argument("--results_dir", type=str, default="/lpai/output/models/clip-refine/scale1_cov", help="directory to save the results to")
     parser.add_argument("--resume", type=str, default="", help="path to the snapshot")
     parser.add_argument("--experiment_id", type=int, default=0)
     parser.add_argument("--num_worker", type=int, default=16)
