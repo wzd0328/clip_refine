@@ -83,6 +83,8 @@ class CLIPUpdater:
             return self.neg_kd_loss
         elif distill_loss == "ancd":
             return self.ancd_loss
+        elif distill_loss == "francd":
+            return self.francd_loss
 
     def get_batch(self, batch, device=None, non_blocking=True):
         x, y = batch
@@ -212,6 +214,62 @@ class CLIPUpdater:
         feat_i = F.normalize(feat_i, p=2, dim=-1)
         cos_sim = (feat_i * feat_it).sum(dim=-1)
         loss_kd = (1.0 - cos_sim).mean()
+        return loss_kd
+    
+    def decompose_high_low_freq(self, logits, ratio=0.25):
+        """
+        辅助函数：利用 2D FFT 将 logits 分解为低频和高频部分
+        :param logits: shape (B, B)
+        :param ratio: 低频截断半径比例 (0.0 到 0.5 之间)
+        """
+        # 1. 转换到频域 (转为 float32 防止混合精度下报错)
+        fft_logits = torch.fft.fft2(logits.float())
+        fft_shift = torch.fft.fftshift(fft_logits)  # 将低频移到中心
+        
+        # 2. 生成低频掩码 (Mask)
+        B1, B2 = logits.shape
+        cy, cx = B1 // 2, B2 // 2
+        Y, X = torch.meshgrid(torch.arange(B1), torch.arange(B2), indexing='ij')
+        # 计算到中心的归一化距离
+        dist = torch.sqrt(((Y - cy) / B1)**2 + ((X - cx) / B2)**2)
+        mask = (dist <= ratio).to(logits.device).float()
+        
+        # 3. 施加掩码进行频域分离
+        low_fft = fft_shift * mask
+        high_fft = fft_shift * (1.0 - mask)
+        
+        # 4. 逆傅里叶变换回到空域 (取实部)
+        logits_low = torch.fft.ifft2(torch.fft.ifftshift(low_fft)).real
+        logits_high = torch.fft.ifft2(torch.fft.ifftshift(high_fft)).real
+        
+        return logits_low, logits_high
+
+    def francd_loss(self, images, texts, feat_i, feat_t):
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
+            out_t = self.teacher(images, texts.squeeze())
+            feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
+            logits_per_image_t = feat_it @ feat_tt.T
+            logits_per_text_t = feat_tt @ feat_it.T
+        logits_per_image = feat_i @ feat_t.T
+        logits_per_text = feat_t @ feat_i.T
+        img_low, img_high = self.decompose_high_low_freq(logits_per_image)
+        img_t_low, img_t_high = self.decompose_high_low_freq(logits_per_image_t.detach())
+        
+        txt_low, txt_high = self.decompose_high_low_freq(logits_per_text)
+        txt_t_low, txt_t_high = self.decompose_high_low_freq(logits_per_text_t.detach())
+
+        loss_kd_low = (
+            distill(img_low, img_t_low, self.T, self.alpha_blending) + 
+            distill(txt_low, txt_t_low, self.T, self.alpha_blending)
+        ) / 2
+        loss_kd_high = (
+            F.mse_loss(img_high, img_t_high) + 
+            F.mse_loss(txt_high, txt_t_high)
+        ) / 2
+
+        lambda_high = 0.5 
+        loss_kd = loss_kd_low + lambda_high * loss_kd_high
+        
         return loss_kd
 
     def uniformity_loss(self, x, t=2):
