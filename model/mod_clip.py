@@ -10,6 +10,7 @@ import open_clip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dino_v2 import DINOv2
 
 OPENCLIP_DATASET = {"ViT-H-14": "laion2b_s32b_b79k", "ViT-bigG-14": "laion2b_s39b_b160k"}
 
@@ -65,17 +66,6 @@ class CLIP(torch.nn.Module):
 
         # self.visual_intermediate_features = {}
         # self._register_visual_hooks(layer_index=-2)
-
-        # self.concat_logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
-
-        ## add fusion module ##
-        ## method1
-        # self.fusion_head = nn.Sequential(
-        #         nn.Linear(512*2, 512),
-        #         nn.ReLU(),
-        #         nn.Linear(512, 512),
-        #         # nn.Sigmoid()
-        #     )
 
     def _freeze_backbone_but_last_n_layers(self, n):
         for p in self.parameters():
@@ -157,25 +147,55 @@ class CLIP(torch.nn.Module):
         feat_v = self.backbone.encode_image(images)
         feat_t = self.backbone.encode_text(texts)
 
-        # active_mask = self.channel_mask(feat_v)
-        # feat_v_masked = feat_v * active_mask
-        # feat_v_masked = F.normalize(feat_v_masked, dim=-1)
-
-        ## method3,4,6
         return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
 
-        ## method2
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp()}
+class CLIPWithDINOV2(torch.nn.Module):
+    def __init__(
+        self,
+        backbone_name="ViT-B/32",
+        pretrained_path="",
+        model_name="vitb14",
+        feat_dim=2048,
+        init_logit_scale=np.log(1 / 0.01),
+        post_train_last_n_layers=2,
+    ):
+        super().__init__()
+        # Load Backbone Vision-Language Model
+        self.backbone, self.img_preprocess, self.tokenizer = load_model(backbone_name)
 
-        ## method1
-        # feat_st_concat = self.encode_concat(feat_v, feat_t)
-        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "feat_st_concat": feat_st_concat}
+        # freeze logit_scale
+        self.backbone.logit_scale.requires_grad = False
 
-        ## method5 intermediate features
-        # feat_mid_v = self.visual_intermediate_features.get("feat", None)
-        # feat_mid_v = F.normalize(feat_mid_v, dim=-1) if feat_mid_v is not None else None
-        # return {"image_features": feat_v, "text_features": feat_t, "feat_mid_v": feat_mid_v, "logit_scale": self.logit_scale.exp()}
+        self.feat_dim = feat_dim
+        self.convert_models_to_fp32()
+        self.logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
+        # load DINOv2 pretrained weights into the vision encoder
+        self.dinov2 = DINOv2(pretrained_path, model_name)
+
+    def convert_models_to_fp32(self):
+        for p in self.parameters():
+            p.data = p.data.float()
+
+    def encode_image(self, x: torch.Tensor, normalized: bool = True):
+        feat_v = self.backbone.encode_image(x)
+        if normalized:
+            feat_v = feat_v / feat_v.norm(dim=-1, keepdim=True)
+        return feat_v
+
+    def encode_text(self, t: torch.Tensor, normalized: bool = True):
+        feat_t = self.backbone.encode_text(t)
+        if normalized:
+            feat_t = feat_t / feat_t.norm(dim=-1, keepdim=True)
+        return feat_t
+
+    def forward(self, images: torch.Tensor, texts: torch.Tensor, test=False):
+        feat_v = self.backbone.encode_image(images)
+        feat_t = self.backbone.encode_text(texts)
+
+        feat_v_dinov2 = self.dinov2(images)
+
+        return {"image_features": feat_v, "text_features": feat_t, "image_features_dinov2": feat_v_dinov2, "logit_scale": self.logit_scale.exp()}
 
 class ZeroshotClassifier(CLIP):
     def __init__(

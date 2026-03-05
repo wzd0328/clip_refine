@@ -84,7 +84,10 @@ class CLIPUpdater:
         elif distill_loss == "ancd":
             return self.ancd_loss
         elif distill_loss == "francd":
-            return self.francd_loss
+            # return self.francd_loss
+            return self.francd_embed_loss
+        elif distill_loss == "dinov2":
+            return self.dinov2_alignment_loss
 
     def get_batch(self, batch, device=None, non_blocking=True):
         x, y = batch
@@ -272,6 +275,36 @@ class CLIPUpdater:
         
         return loss_kd
 
+    def francd_embed_loss(self, images, texts, feat_i, feat_t, low_ratio=0.25):
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
+            out_t = self.teacher(images, texts.squeeze())
+            feat_it = out_t["image_features"]
+        fft_s = torch.fft.rfft(feat_i.float(), dim=1)
+        fft_t = torch.fft.rfft(feat_it.float(), dim=1)
+        
+        freq_dim = fft_s.shape[1]
+        cutoff = int(freq_dim * low_ratio)
+        
+        low_s, low_t = fft_s[:, :cutoff], fft_t[:, :cutoff]
+        loss_low = F.mse_loss(torch.view_as_real(low_s), torch.view_as_real(low_t))
+        
+        high_s, high_t = fft_s[:, cutoff:], fft_t[:, cutoff:]
+        loss_high = F.mse_loss(torch.view_as_real(high_s), torch.view_as_real(high_t))
+        
+        lambda_low = 1.0
+        lambda_high = 2.0
+        
+        loss_kd = lambda_low * loss_low + lambda_high * loss_high
+        return loss_kd
+
+    def dinov2_alignment_loss(self, images, texts, feat_i, feat_t):
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
+            feat_it_dinov2 = self.model.module.dinov2(images) if hasattr(self.model, 'module') else self.model.dinov2(images)
+        feat_i = F.normalize(feat_i, p=2, dim=-1)
+        feat_it_dinov2 = F.normalize(feat_it_dinov2, p=2, dim=-1)
+        cos_sim = (feat_i * feat_it_dinov2).sum(dim=-1)
+        loss_kd = (1.0 - cos_sim).mean()
+        return loss_kd
     def uniformity_loss(self, x, t=2):
         x = F.normalize(x, p=2, dim=-1)
         sim_matrix = x @ x.T
