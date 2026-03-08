@@ -19,7 +19,7 @@ from .attention import Attention, MemEffAttention
 from .drop_path import DropPath
 from .layer_scale import LayerScale
 from .mlp import Mlp
-
+from typing import Optional
 
 logger = logging.getLogger("dinov2")
 
@@ -147,9 +147,9 @@ class CausalAttentionBlock(nn.Module):
 
     def init_weights(
         self,
-        init_attn_std: float | None = None,
-        init_proj_std: float | None = None,
-        init_fc_std: float | None = None,
+        init_attn_std: Optional[float] = None,
+        init_proj_std: Optional[float] = None,
+        init_fc_std: Optional[float] = None,
         factor: float = 1.0,
     ) -> None:
         init_attn_std = init_attn_std or (self.dim**-0.5)

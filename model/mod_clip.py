@@ -10,7 +10,7 @@ import open_clip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dino_v2 import DINOv2
+from mod_dinov2 import DINOv2
 
 OPENCLIP_DATASET = {"ViT-H-14": "laion2b_s32b_b79k", "ViT-bigG-14": "laion2b_s39b_b160k"}
 
@@ -153,7 +153,7 @@ class CLIPWithDINOV2(torch.nn.Module):
     def __init__(
         self,
         backbone_name="ViT-B/32",
-        pretrained_path="",
+        pretrained_path="/lpai/volumes/so-volume-bd-ga/lhp/checkpoint/dinov2_vitb14_pretrain.pth",
         model_name="vitb14",
         feat_dim=2048,
         init_logit_scale=np.log(1 / 0.01),
@@ -172,6 +172,11 @@ class CLIPWithDINOV2(torch.nn.Module):
 
         # load DINOv2 pretrained weights into the vision encoder
         self.dinov2 = DINOv2(pretrained_path, model_name)
+        # freeze DINOv2 weights
+        for p in self.dinov2.parameters():
+            p.requires_grad = False
+
+        # self.projection = nn.Linear(self.dinov2.embed_dim, self.backbone.visual.output_dim)
 
     def convert_models_to_fp32(self):
         for p in self.parameters():
@@ -182,6 +187,17 @@ class CLIPWithDINOV2(torch.nn.Module):
         if normalized:
             feat_v = feat_v / feat_v.norm(dim=-1, keepdim=True)
         return feat_v
+    
+    def encode_image_pre_proj(self, x: torch.Tensor):
+        original_proj = self.backbone.visual.proj
+
+        try:
+            self.backbone.visual.proj = None
+            feat_pre_proj = self.backbone.visual(x)
+        finally:
+            self.backbone.visual.proj = original_proj
+
+        return feat_pre_proj
 
     def encode_text(self, t: torch.Tensor, normalized: bool = True):
         feat_t = self.backbone.encode_text(t)
@@ -190,12 +206,16 @@ class CLIPWithDINOV2(torch.nn.Module):
         return feat_t
 
     def forward(self, images: torch.Tensor, texts: torch.Tensor, test=False):
-        feat_v = self.backbone.encode_image(images)
+        ## get vision feature before proj  --768
+        feat_v_pre_proj = self.encode_image_pre_proj(images)
+        feat_v = feat_v_pre_proj @ self.backbone.visual.proj
+        # feat_v = self.backbone.encode_image(images)
         feat_t = self.backbone.encode_text(texts)
 
         feat_v_dinov2 = self.dinov2(images)
+        # feat_v_dinov2 = self.projection(feat_v_dinov2)
 
-        return {"image_features": feat_v, "text_features": feat_t, "image_features_dinov2": feat_v_dinov2, "logit_scale": self.logit_scale.exp()}
+        return {"image_features_preproj": feat_v_pre_proj, "image_features": feat_v, "text_features": feat_t, "image_features_dinov2": feat_v_dinov2, "logit_scale": self.logit_scale.exp()}
 
 class ZeroshotClassifier(CLIP):
     def __init__(

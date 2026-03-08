@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.utils.checkpoint
 from torch.nn.init import trunc_normal_
 
-from dinov2.layers import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, NestedTensorBlock as Block
+from dino_v2.layers import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, NestedTensorBlock as Block
 
 
 logger = logging.getLogger("dinov2")
@@ -449,7 +449,7 @@ def DINOv2(checkpoint_path, model_name="vitb14"):
         print(f"Loading DINOv2 weights from {checkpoint_path}")
         state_dict = torch.load(checkpoint_path, map_location='cpu')
 
-        print(state_dict.keys())
+        # print(state_dict.keys())
         
         # DINOv2 权重可能包装在 'teacher' 或 'model' 键中
         if 'teacher' in state_dict:

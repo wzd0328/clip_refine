@@ -5,13 +5,13 @@ batchsize: 512
 experiment_iterations: 1
 train_val_split_ratio: 0.99
 snapshot_interval: 1
-log_metrics: ["modality_gap"]
+log_metrics: ["modality_gap", "loss_dinoalign"]
 
 models:
   pattern: CLIP-ViT-B_32
   model:
     func: model/mod_clip.py
-    name: CLIP
+    name: CLIPWithDINOV2
     args:
       backbone_name: "ViT-B/32"
 
@@ -41,3 +41,6 @@ optimizer:
 updater:
   func: updater/contrastive.py
   name: CLIPUpdater
+  args:
+    lambda_cont: 1.0
+    lambda_dinoalign: 1.0

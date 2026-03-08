@@ -1,23 +1,23 @@
 SETTINGS = {
     "experiments": {
-        # "zeroshot_classification_aircraft": {
-        #     "test_function": "metrics/zeroshot_classification.py",
-        #     "function_name": "evaluate",
-        #     "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "Aircraft", "args": {"test": True}},
-        #     "test_args": {"classname_file": "data/classnames/fgvc_aircraft.txt"},
-        # },
+        "zeroshot_classification_aircraft": {
+            "test_function": "metrics/zeroshot_classification.py",
+            "function_name": "evaluate",
+            "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "Aircraft", "args": {"test": True}},
+            "test_args": {"classname_file": "data/classnames/fgvc_aircraft.txt"},
+        },
         # "zeroshot_classification_bird": {
         #     "test_function": "metrics/zeroshot_classification.py",
         #     "function_name": "evaluate",
         #     "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "Bird", "args": {"test": True}},
         #     "test_args": {"classname_file": "data/classnames/cub.txt"},
         # },
-        # "zeroshot_classification_car": {
-        #     "test_function": "metrics/zeroshot_classification.py",
-        #     "function_name": "evaluate",
-        #     "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "Car", "args": {"test": True}},
-        #     "test_args": {"classname_file": "data/classnames/stanford_cars.txt"},
-        # },
+        "zeroshot_classification_car": {
+            "test_function": "metrics/zeroshot_classification.py",
+            "function_name": "evaluate",
+            "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "Car", "args": {"test": True}},
+            "test_args": {"classname_file": "data/classnames/stanford_cars.txt"},
+        },
         # "zeroshot_classification_caltech101": {
         #     "test_function": "metrics/zeroshot_classification.py",
         #     "function_name": "evaluate",
@@ -30,12 +30,12 @@ SETTINGS = {
         #     "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "DTD", "args": {"test": True}},
         #     "test_args": {"classname_file": "data/classnames/dtd.txt"},
         # },
-        # "zeroshot_classification_eurosat": {
-        #     "test_function": "metrics/zeroshot_classification.py",
-        #     "function_name": "evaluate",
-        #     "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "EuroSAT", "args": {"test": True}},
-        #     "test_args": {"classname_file": "data/classnames/eurosat.txt"},
-        # },
+        "zeroshot_classification_eurosat": {
+            "test_function": "metrics/zeroshot_classification.py",
+            "function_name": "evaluate",
+            "dataset_cls": {"dataset_func": "data/generic.py", "dataset_name": "EuroSAT", "args": {"test": True}},
+            "test_args": {"classname_file": "data/classnames/eurosat.txt"},
+        },
         # "zeroshot_classification_flower": {
         #     "test_function": "metrics/zeroshot_classification.py",
         #     "function_name": "evaluate",

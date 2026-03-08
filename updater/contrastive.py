@@ -35,6 +35,7 @@ class CLIPUpdater:
         *args,
         lambda_cont=1.0,
         lambda_kd=None,
+        lambda_dinoalign=0.0,
         distill_loss="fd",
         max_iteration=None,
         temperature=1.0,
@@ -46,6 +47,7 @@ class CLIPUpdater:
         self.optimizer = kwargs.pop("optimizer")
         self.device = kwargs.pop("device")
         self.lambda_cont = lambda_cont
+        self.lambda_dinoalign = lambda_dinoalign
         self.max_iteration = max_iteration
         if lambda_kd is not None:
             self.lambda_kd = lambda_kd
@@ -86,8 +88,6 @@ class CLIPUpdater:
         elif distill_loss == "francd":
             # return self.francd_loss
             return self.francd_embed_loss
-        elif distill_loss == "dinov2":
-            return self.dinov2_alignment_loss
 
     def get_batch(self, batch, device=None, non_blocking=True):
         x, y = batch
@@ -297,14 +297,13 @@ class CLIPUpdater:
         loss_kd = lambda_low * loss_low + lambda_high * loss_high
         return loss_kd
 
-    def dinov2_alignment_loss(self, images, texts, feat_i, feat_t):
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
-            feat_it_dinov2 = self.model.module.dinov2(images) if hasattr(self.model, 'module') else self.model.dinov2(images)
+    def dinov2_alignment_loss(self, feat_i, feat_v_dinov2):
+        # print("clip img dim, dino dim", feat_i.shape[-1], feat_v_dinov2.shape[-1])
         feat_i = F.normalize(feat_i, p=2, dim=-1)
-        feat_it_dinov2 = F.normalize(feat_it_dinov2, p=2, dim=-1)
-        cos_sim = (feat_i * feat_it_dinov2).sum(dim=-1)
-        loss_kd = (1.0 - cos_sim).mean()
-        return loss_kd
+        feat_v_dinov2 = F.normalize(feat_v_dinov2, p=2, dim=-1)
+        cos_sim = (feat_i * feat_v_dinov2).sum(dim=-1)
+        loss_align = (1.0 - cos_sim).mean()
+        return loss_align
     def uniformity_loss(self, x, t=2):
         x = F.normalize(x, p=2, dim=-1)
         sim_matrix = x @ x.T
@@ -379,7 +378,8 @@ class CLIPUpdater:
             # center_loss = self.center_loss(feat_i, feat_t)
             # cov_loss = self.covariance_regularization(feat_i)
             # spec_loss = self.spec_loss(feat_i)
-            total_loss = self.lambda_cont * contrastive_loss
+            loss_dinoalign = self.dinov2_alignment_loss(out["image_features_preproj"], out["image_features_dinov2"])
+            total_loss = self.lambda_cont * contrastive_loss + self.lambda_dinoalign * loss_dinoalign
 
             if self.teacher:
                 self.teacher.eval()  # Ensure teacher is in eval mode
@@ -410,6 +410,7 @@ class CLIPUpdater:
                 # "loss_center": center_loss.detach().item(),
                 # "loss_cov": cov_loss.detach().item(),
                 # "loss_spec": spec_loss.detach().item(),
+                "loss_dinoalign": loss_dinoalign.detach().item(),
                 "feat_gap": feat_gap.detach().item(),
                 "modality_gap": modality_gap.detach().item(),
             }

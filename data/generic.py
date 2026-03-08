@@ -9,10 +9,15 @@ class GenericDataset(torchvision.datasets.ImageFolder):
     def __init__(self, root, transform, test=False, **kwargs) -> None:
         assert (root is not None) and (transform is not None)
         train = not test
+        class_name = self.__class__.__name__
         if train:
             split_data_dir = os.path.join(root, "train")
         else:
-            split_data_dir = os.path.join(root, "test")
+            if class_name == 'EuroSAT':
+                sub_folder = "val"
+            else:
+                sub_folder = "test"
+            split_data_dir = os.path.join(root, sub_folder)
         super(GenericDataset, self).__init__(root=split_data_dir, transform=transform)
 
 
@@ -20,7 +25,7 @@ class Aircraft(GenericDataset):
 
     def __init__(self, transform, test=True, **kwargs):
         super(Aircraft, self).__init__(
-            root="/dataset/Aircraft",
+            root="/lpai/volumes/so-data-lhp-bd-ga/dataset/zero-shot-datasets/fgvc",
             transform=transform,
             test=test,
         )
@@ -30,7 +35,7 @@ class Bird(GenericDataset):
 
     def __init__(self, transform, test=True, **kwargs):
         super(Bird, self).__init__(
-            root="/dataset/CUB-200-2011",
+            root="/lpai/volumes/so-data-lhp-bd-ga/dataset/birdsnap/data",
             transform=transform,
             test=test,
         )
@@ -40,7 +45,7 @@ class Car(GenericDataset):
 
     def __init__(self, transform, test=True, **kwargs):
         super(Car, self).__init__(
-            root="/dataset/StanfordCars",
+            root="/lpai/volumes/so-volume-bd-ga/lhp/datasets/Stanford_Cars_dataset",
             transform=transform,
             test=test,
         )
@@ -50,7 +55,7 @@ class Caltech101(GenericDataset):
 
     def __init__(self, transform, test=True, **kwargs):
         super(Caltech101, self).__init__(
-            root="/dataset/Caltech101",
+            root="/lpai/volumes/so-volume-bd-ga/lhp/datasets/caltech-101",
             transform=transform,
             test=test,
         )
@@ -60,7 +65,7 @@ class DTD(GenericDataset):
 
     def __init__(self, transform, test=True, **kwargs):
         super(DTD, self).__init__(
-            root="/dataset/DTD",
+            root="/lpai/volumes/so-data-lhp-bd-ga/dataset/dtd/data",
             transform=transform,
             test=test,
         )
@@ -70,7 +75,7 @@ class EuroSAT(GenericDataset):
 
     def __init__(self, transform, test=True, **kwargs):
         super(EuroSAT, self).__init__(
-            root="/dataset/EuroSAT",
+            root="/lpai/volumes/so-data-lhp-bd-ga/dataset/zero-shot-datasets/euro_sat",
             transform=transform,
             test=test,
         )
