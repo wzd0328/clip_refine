@@ -84,7 +84,9 @@ class CLIPUpdater:
         elif distill_loss == "ancd":
             return self.ancd_loss
         elif distill_loss == "francd":
-            return self.francd_loss
+            # return self.francd_loss
+            return self.francd_embed_loss
+            # return self.francd_embed_adaptive_loss
 
     def get_batch(self, batch, device=None, non_blocking=True):
         x, y = batch
@@ -163,8 +165,9 @@ class CLIPUpdater:
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
             out_t = self.teacher(images, texts.squeeze())
             feat_it, feat_tt = out_t["image_features"], out_t["text_features"]
+            feat_it = F.normalize(feat_it, p=2, dim=-1)
             _, S_tea_i, _ = torch.linalg.svd(feat_it, full_matrices=False)
-            
+        feat_i = F.normalize(feat_i, p=2, dim=-1)    
         _, S_stu_i, _ = torch.linalg.svd(feat_i, full_matrices=False)
         loss_kd = F.mse_loss(torch.log(S_stu_i + 1e-6), torch.log(S_tea_i + 1e-6))
         # diff = torch.log(S_tea_i + 1e-6) - torch.log(S_stu_i + 1e-6)
@@ -271,6 +274,53 @@ class CLIPUpdater:
         loss_kd = loss_kd_low + lambda_high * loss_kd_high
         
         return loss_kd
+    
+    def francd_embed_loss(self, images, texts, feat_i, feat_t, low_ratio=0.25):
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
+            out_t = self.teacher(images, texts.squeeze())
+            feat_it = out_t["image_features"]
+            # feat_it = out_t["image_features_preproj"]
+
+        feat_i = F.normalize(feat_i, p=2, dim=-1)
+        feat_it = F.normalize(feat_it, p=2, dim=-1)
+        fft_s = torch.fft.rfft(feat_i.float(), dim=1)
+        fft_t = torch.fft.rfft(feat_it.float(), dim=1)
+        
+        freq_dim = fft_s.shape[1]
+        cutoff = int(freq_dim * low_ratio)
+        
+        low_s, low_t = fft_s[:, :cutoff], fft_t[:, :cutoff]
+        loss_low = F.mse_loss(torch.view_as_real(low_s), torch.view_as_real(low_t))
+        
+        high_s, high_t = fft_s[:, cutoff:], fft_t[:, cutoff:]
+        loss_high = F.mse_loss(torch.view_as_real(high_s), torch.view_as_real(high_t))
+        
+        lambda_low = 1.0
+        lambda_high = 2.0
+        
+        loss_kd = lambda_low * loss_low + lambda_high * loss_high
+        return loss_kd
+
+    def francd_embed_adaptive_loss(self, images, texts, feat_i, feat_t):
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.use_amp):
+            out_t = self.teacher(images, texts.squeeze())
+            feat_it = out_t["image_features"]
+
+        feat_i = F.normalize(feat_i, p=2, dim=-1)
+        feat_it = F.normalize(feat_it, p=2, dim=-1)
+
+        fft_s = torch.fft.rfft(feat_i.float(), dim=1)
+        fft_t = torch.fft.rfft(feat_it.float(), dim=1)
+        
+        amplitude_t = torch.abs(fft_t) 
+
+        weights = amplitude_t / (amplitude_t.mean(dim=1, keepdim=True) + 1e-6)
+        weights = torch.pow(weights, 2.0)
+       
+        diff = fft_s - fft_t
+        loss_kd = (diff.abs().pow(2) * weights).mean()
+        
+        return loss_kd
 
     def uniformity_loss(self, x, t=2):
         x = F.normalize(x, p=2, dim=-1)
@@ -351,6 +401,7 @@ class CLIPUpdater:
             if self.teacher:
                 self.teacher.eval()  # Ensure teacher is in eval mode
                 loss_kd = self.loss_kd(images, texts, feat_i, feat_t)
+                # loss_kd = self.loss_kd(images, texts, out["image_features_preproj"], feat_t)
                 total_loss = total_loss + self.lambda_kd * loss_kd
                 report.update(
                     {

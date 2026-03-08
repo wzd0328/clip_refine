@@ -48,23 +48,38 @@ class CLIP(torch.nn.Module):
         backbone_name="ViT-B/32",
         feat_dim=2048,
         init_logit_scale=np.log(1 / 0.01),
-        post_train_last_n_layers=2,
+        post_train_last_n_layers=0,
     ):
         super().__init__()
         # Load Backbone Vision-Language Model
         self.backbone, self.img_preprocess, self.tokenizer = load_model(backbone_name)
 
         # freeze logit_scale
-        self.backbone.logit_scale.requires_grad = False
+        # self.backbone.logit_scale.requires_grad = False
+
+        # freeze text encoder
+        # text_modules = [
+        #     self.backbone.transformer,
+        #     self.backbone.token_embedding,
+        #     self.backbone.ln_final,
+        # ]
+        # for m in text_modules:
+        #     for p in m.parameters():
+        #         p.requires_grad = False
 
         self.feat_dim = feat_dim
         self.convert_models_to_fp32()
         self.logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
+        # self.logit_scale = torch.nn.Parameter(torch.ones([]) * self.backbone.logit_scale)
 
-        # self._freeze_backbone_but_last_n_layers(post_train_last_n_layers)
+        # self.bias = nn.Parameter(torch.tensor(-10.0))
+
+        # self._freeze_visionbackbone_but_last_n_layers(post_train_last_n_layers)
 
         # self.visual_intermediate_features = {}
-        # self._register_visual_hooks(layer_index=-2)
+        # self._register_visual_hooks(layer_index=-1)
+
+        # self.bn = nn.BatchNorm1d(512, affine=False)
 
         # self.concat_logit_scale = torch.nn.Parameter(torch.ones([]) * init_logit_scale)
 
@@ -77,12 +92,10 @@ class CLIP(torch.nn.Module):
         #         # nn.Sigmoid()
         #     )
 
-    def _freeze_backbone_but_last_n_layers(self, n):
+    def _freeze_visionbackbone_but_last_n_layers(self, n):
         for p in self.parameters():
             p.requires_grad = False
-            
-        # for p in self.fusion_head.parameters():
-        #     p.requires_grad = True
+
         self.logit_scale.requires_grad = True
         
         if hasattr(self.backbone, "visual"):
@@ -133,6 +146,17 @@ class CLIP(torch.nn.Module):
         if normalized:
             feat_v = feat_v / feat_v.norm(dim=-1, keepdim=True)
         return feat_v
+    
+    def encode_image_pre_proj(self, x: torch.Tensor):
+        original_proj = self.backbone.visual.proj
+
+        try:
+            self.backbone.visual.proj = None
+            feat_pre_proj = self.backbone.visual(x)
+        finally:
+            self.backbone.visual.proj = original_proj
+
+        return feat_pre_proj
 
     def encode_text(self, t: torch.Tensor, normalized: bool = True):
         feat_t = self.backbone.encode_text(t)
@@ -154,6 +178,10 @@ class CLIP(torch.nn.Module):
         return feat_st_concat
 
     def forward(self, images: torch.Tensor, texts: torch.Tensor, test=False):
+        ## get img feature before proj --768
+        # feat_v_pre_proj = self.encode_image_pre_proj(images)
+        # feat_v = feat_v_pre_proj @ self.backbone.visual.proj
+
         feat_v = self.backbone.encode_image(images)
         feat_t = self.backbone.encode_text(texts)
 
@@ -161,8 +189,11 @@ class CLIP(torch.nn.Module):
         # feat_v_masked = feat_v * active_mask
         # feat_v_masked = F.normalize(feat_v_masked, dim=-1)
 
-        ## method3,4,6
+        ## method3,4,7
         return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
+        # return {"image_features_preproj": feat_v_pre_proj, "image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp()}
+
+        # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "bias": self.bias}
 
         ## method2
         # return {"image_features": feat_v, "text_features": feat_t, "logit_scale": self.logit_scale.exp(), "concat_logit_scale": self.concat_logit_scale.exp()}
